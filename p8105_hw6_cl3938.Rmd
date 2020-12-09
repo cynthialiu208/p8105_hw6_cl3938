@@ -1,30 +1,247 @@
 ---
-title: "p8105_hw6_cl3938"
+title: "Homework 6"
 author: "Cynthia Liu (cl3938)"
-date: "12/8/2020"
 output: github_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(viridis)
+library(MASS)
+library(modelr)
+library(mgcv)
+library(purrr)
+library(rnoaa)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
 ```
 
-## R Markdown
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+### Problem 1
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r}
+homicide_df = 
+  read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    victim_age = as.numeric(victim_age),
+    resolution = case_when(
+      disposition == "Closed without arrest" ~ 0,
+      disposition == "Open/No arrest"        ~ 0,
+      disposition == "Closed by arrest"      ~ 1)
+  ) %>% 
+  filter(
+    victim_race %in% c("White", "Black"),
+    city_state != "Tulsa, AL") %>% 
+  dplyr::select(city_state, resolution, victim_age, victim_race, victim_sex)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+Start with one city.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+baltimore_df =
+  homicide_df %>% 
+  filter(city_state == "Baltimore, MD")
+glm(resolution ~ victim_age + victim_race + victim_sex, 
+    data = baltimore_df,
+    family = binomial()) %>% 
+  broom::tidy() %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) %>% 
+  dplyr::select(term, OR, starts_with("CI")) %>% 
+  knitr::kable(digits = 3)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+Try this across cities.
+
+```{r}
+models_results_df = 
+  homicide_df %>% 
+  nest(data = -city_state) %>% 
+  mutate(
+    models = 
+      map(.x = data, ~glm(resolution ~ victim_age + victim_race + victim_sex, data = .x, family = binomial())),
+    results = map(models, broom::tidy)
+  ) %>% 
+  dplyr::select(city_state, results) %>% 
+  unnest(results) %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) %>% 
+  dplyr::select(city_state, term, OR, starts_with("CI")) 
+```
+
+```{r}
+models_results_df %>% 
+  filter(term == "victim_sexMale") %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+
+### Problem 2
+
+First, let's import and clean the data. The following steps were taken: 
+
+  * Import CSV 
+  * Clean names
+  * Change relevant variables to factor
+  
+```{r}
+#input data
+baby_df = 
+  read_csv("./data/birthweight.csv") %>%
+  janitor::clean_names() %>%
+  mutate(
+    babysex = as.factor(babysex),
+    frace = as.factor(frace),
+    malform = as.factor(malform),
+    mrace = as.factor(mrace)) 
+```
+There are `r sum(is.na(baby_df))` missing values in the entire dataframe. This is great, so we'll progress to making our regression models.
+
+Model 1: curated model
+
+For this model, we'll use a stepwise algorithm to automatically select the best model from the full list of predictors. This is primarily used as exploratory analysis: the model adds and removes predictors iteratively based on a predetermined criteria. For my purposes, I'm going to use Akaike Information Criteria, or AIC, a metric that is a good balance between prioritizing model fit and also penalizing for too many predictors.
+
+It's important to note that stepwise model selection results shouldn't be overintepreted, and there's a great deal of uncertainty surrounding them. I'm only going to use it to explore the data a bit, since I know next to nothing about this field - true models should always be based in reason & literature review.
+
+Let's get started!
+```{r}
+#Fit the full model 
+full_bwt_linear.model <- lm(bwt~., data = baby_df)
+
+#Stepwise regression model
+step_bwt_linear.model <- stepAIC(full_bwt_linear.model, direction = "both", 
+                      trace = FALSE)
+
+#Display converged model
+step_bwt_linear.model %>% 
+  broom::tidy() %>%
+  knitr::kable(digits = 3)
+
+#Plot the model
+baby_df %>% 
+  modelr::add_residuals(step_bwt_linear.model) %>% 
+  modelr::add_predictions(step_bwt_linear.model) %>%
+  ggplot(aes(x = pred, y = resid)) + 
+  geom_point() +
+  geom_smooth(se = F) +
+  labs(
+    x = "Predicted Values",
+    y = "Residuals",
+    title = "Residuals vs Fitted"
+  )
+
+```
+
+Other models: 
+
+* Model 1: length at birth and gestational age as predictors (main effects only)
+```{r}
+test_1.model <- lm(bwt~gaweeks + blength, data= baby_df)
+
+test_1.model %>% 
+  broom::tidy() %>%
+  knitr::kable(digits = 3)
+```
+
+* Model 2: head circumference, length, sex, and all interactions (including the three-way interaction) between these
+
+```{r}
+test_2.model <- lm(bwt~babysex*bhead*blength, data = baby_df)
+
+test_2.model %>% 
+  broom::tidy() %>%
+  knitr::kable(digits = 3)
+```
+
+Before we do cross-validation, let's take a look at goodness of fit of our 3 respective models:
+```{r}
+baby_df %>% 
+  gather_predictions(step_bwt_linear.model, test_1.model, test_2.model) %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = blength, y = bwt)) + 
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red") + 
+  facet_grid(~model)
+```
+
+Let's start with cross-validation! Splitting data into training & testing:
+```{r}
+cv_df =
+  crossv_mc(baby_df, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+```
+
+Fitting models & obtaining RMSE values: 
+```{r}
+cv_df = 
+  cv_df %>% 
+  mutate(
+    step_mod  = map(train, ~lm(bwt~babysex + bhead + blength + delwt + fincome + gaweeks + mrace + parity + ppwt + smoken, data = .x)),
+    test1_mod = map(train, ~lm(bwt~gaweeks + blength, data = .x)),
+    test2_mod = map(train, ~lm(bwt~babysex*bhead*blength, data = .x))) %>% 
+  mutate(
+    rmse_step = map2_dbl(step_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_test1  = map2_dbl(test1_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_test2 = map2_dbl(test2_mod, test, ~rmse(model = .x, data = .y)))
+```
+
+Okay, now let's make our violin plots:
+
+```{r}
+cv_df %>% 
+  dplyr::select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+
+### Problem 3
+
+Import data
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  dplyr::select(name, id, everything())
+```
+
