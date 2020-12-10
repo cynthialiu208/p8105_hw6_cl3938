@@ -131,6 +131,7 @@ For this model, we'll use a stepwise algorithm to automatically select the best 
 It's important to note that stepwise model selection results shouldn't be overintepreted, and there's a great deal of uncertainty surrounding them. I'm only going to use it to explore the data a bit, since I know next to nothing about this field - true models should always be based in reason & literature review.
 
 Let's get started!
+For my stepwise model selection process, I'll be using all the predictor main effects. Because of computational limitations, we'll restrict our analyses to main effects without interaction terms.
 ```{r}
 #Fit the full model 
 full_bwt_linear.model <- lm(bwt~., data = baby_df)
@@ -138,7 +139,10 @@ full_bwt_linear.model <- lm(bwt~., data = baby_df)
 #Stepwise regression model
 step_bwt_linear.model <- stepAIC(full_bwt_linear.model, direction = "both", 
                       trace = FALSE)
+```
 
+Let's take a look at the selected predictors and parameter estimates! We'll also plot the residuals against the fitted values to check for normality. 
+```{r}
 #Display converged model
 step_bwt_linear.model %>% 
   broom::tidy() %>%
@@ -150,7 +154,6 @@ baby_df %>%
   modelr::add_predictions(step_bwt_linear.model) %>%
   ggplot(aes(x = pred, y = resid)) + 
   geom_point() +
-  geom_smooth(se = F) +
   labs(
     x = "Predicted Values",
     y = "Residuals",
@@ -158,6 +161,8 @@ baby_df %>%
   )
 
 ```
+The predictors chosen were babysex (male vs female), bhead, blength, delwt, fincome, gaweeks, mheight, mrace (only if Black, Asian, and Puerto Rican mothers), parity, ppwt, and smoken.
+So the model's not perfect, but it appears that the residuals are largely scattered around the Y = 0 line in a symmetrical manner, meaning our model residuals are likely normally distributed enough that the linear regression we fit is appropriate. Let's try some other models! 
 
 Other models: 
 
@@ -178,17 +183,6 @@ test_2.model <- lm(bwt~babysex*bhead*blength, data = baby_df)
 test_2.model %>% 
   broom::tidy() %>%
   knitr::kable(digits = 3)
-```
-
-Before we do cross-validation, let's take a look at goodness of fit of our 3 respective models:
-```{r}
-baby_df %>% 
-  gather_predictions(step_bwt_linear.model, test_1.model, test_2.model) %>% 
-  mutate(model = fct_inorder(model)) %>% 
-  ggplot(aes(x = blength, y = bwt)) + 
-  geom_point(alpha = .5) +
-  geom_line(aes(y = pred), color = "red") + 
-  facet_grid(~model)
 ```
 
 Let's start with cross-validation! Splitting data into training & testing:
@@ -228,6 +222,8 @@ cv_df %>%
   ggplot(aes(x = model, y = rmse)) + geom_violin()
 ```
 
+Since we want lower RMSE, it appears the model built using a stepwise selection process with AIC is the best model. However, it's important to note that it isn't that different from the second test model in terms of RMSE. There's always a tradeoff to consider in terms of model parsimony and fit, but that conversation is outside of what we're trying to do here. It appears the stepwise model selection process did a good job selecting relevant predictors! Now before we report results, we should compare results to literature and check for multicollinearity...
+
 ### Problem 3
 
 Import data
@@ -243,5 +239,73 @@ weather_df =
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
   dplyr::select(name, id, everything())
+
+  
 ```
 
+Now let's run 5000 bootstrap samples, regressing tmax as a function of tmin. From there, we'll obtain the esimated R-squared values and log(beta_0*beta_1) value as well as the 95% confidence intervals for them both.
+
+```{r}
+weather_bootstrap_df = weather_df %>% 
+  modelr::bootstrap(n = 5000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    r2_results = map(models, broom::glance),
+    beta_results = map(models, broom::tidy)) %>%
+  dplyr::select(-strap, -models) %>%
+  unnest(beta_results, r2_results) %>%
+  dplyr::select(.id, r.squared, term, estimate) %>%
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate") %>%
+  janitor::clean_names() %>%
+  mutate(
+    log_betas = log(intercept*tmin)
+  )
+```
+
+Adding confidence interval 
+```{r}
+bootstrap_ci = weather_bootstrap_df %>%
+  summarize (
+    r_squared_lower_ci = quantile(r_squared, 0.025),
+    r_squared_upper_ci = quantile(r_squared, 0.975),
+    log_beta_lower_ci = quantile(log_betas, 0.025),
+    log_beta_upper_ci = quantile(log_betas, 0.975)
+  )
+```
+
+Let's go ahead and plot the data we generated from the bootstrap samples. 
+
+Starting with the estimated R-squared distribution:
+```{r}
+weather_bootstrap_df %>%
+  ggplot(aes(x = r_squared)) + 
+  geom_density() +
+  labs(
+    x = "R-Squared",
+    y = "Density",
+    title = "Simulated R-Squared Distribution",
+    caption = "Based off 5000 bootstrap samples"
+  )
+```
+
+The 95% confidence interval for the R-squared is (`r bootstrap_ci$r_squared_lower_ci`, `r bootstrap_ci$r_squared_upper_ci`) 
+
+Next, the log(beta_0*beta_1) distribution:
+```{r}
+weather_bootstrap_df %>%
+  ggplot(aes(x = log_betas)) + 
+  geom_density() +
+    labs(
+    x = "Log(Intercept * Beta_1)",
+    y = "Density",
+    title = "Simulated Log(Intercept * Beta_1)",
+    caption = "Based off 5000 bootstrap samples"
+  )
+  
+```
+
+The 95% confidence interval for the log(beta_0*beta_1) is (`r bootstrap_ci$log_beta_lower_ci`, `r bootstrap_ci$log_beta_upper_ci`). 
+
+Unsurprisingly, both of our distributions look like they follow our favorite normal distribution! 
